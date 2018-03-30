@@ -2,108 +2,9 @@ var async = require('async')
 var RawModule = require('webpack/lib/RawModule')
 var path = require('path')
 var fs = require('fs')
-var process = require('process')
-
-var moduleVersions = {}; // 安装的全部依赖版本了
-var moduleVersionsUsed = {}; // 实际使用的
-/*
-var moduleVersions = {
-  "111": {
-    "0.1.0": Set(3) {"/Users/zihao5/Desktop/Test/wajuejiProject/src/view/index/index.html", "/Users/zihao5/Desktop/Test/wajuejiProject/src/view/index/index.js", "/Users/zihao5/Desktop/Test/wajuejiProject/src/view/index/test.mustache"}
-  },
-  "webpack-marauder": {
-    "1.8.0": {}
-  },
-  "promise-polyfill": {
-    "6.1.0": {}
-  },
-  "object-assign": {
-    "4.1.1": {}
-  },
-  "js-infinite-scroller": {
-    "0.1.0": {}
-  },
-  "@mfelibs/base-utils": {
-    "1.5.3": {}
-  },
-  "@mfelibs/base-tools-SIMA": {
-    "0.0.22": {},
-    "0.0.23": {}
-  },
-  "@mfelibs/base-tools-lazyload": {
-    "1.5.91-rc": {}
-  },
-  "hogan.js": {
-    "3.0.2": {}
-  }
-}
-*/
-function getModuleName(str) {
-  if (/^@/.test(str)) {
-    // 带命名空间 私有仓库
-    let nameList = str.match(/[^\/]*\/[^\/]*/);
-    return nameList && nameList[0]
-  } else {
-    return str.split('/')[0]
-  }
-}
-
-function getModuleVersion(path, name) {
-  let thisVersion = '';
-  let allThisModuleVersion = moduleVersions[name];
-  for (let version in allThisModuleVersion) {
-    allThisModuleVersion[version].forEach(_path => {
-      if (path === _path) {
-        thisVersion = version;
-
-        // 存储实际使用的模块
-        moduleVersionsUsed[name] = moduleVersionsUsed[name] || {};
-        moduleVersionsUsed[name][version] = moduleVersionsUsed[name][version] || [];
-        if (moduleVersionsUsed[name][version].indexOf(_path) === -1) {
-          moduleVersionsUsed[name][version].push(_path)
-        }
-      }
-    })
-  }
-  return thisVersion
-}
-
-/**
- * 
- * @param {Object} oj 
- * @param {String} path 
- * @param {number} index 初始时传1 表示第一层的依赖
- */
-function findByIndex(oj, path, index) {
-  let temp = path.split('node_modules/');
-  let nums = temp.length;
-  if (nums < index + 1) {
-    return;
-  }
-  let name = getModuleName(temp[index]);
-  let version = getModuleVersion(path, name);
-  let thisModuleInfo = {
-    "name": name,
-    "type": "CMD",
-    "version": version,
-    "dependency": []
-  }
-  // console.log(name, version, index);
-  if (nums === index + 1) {
-    let unique = 1;
-    oj.dependency.forEach(dep => {
-      if (dep.name === name && dep.version === version) {
-        unique = 0;
-      }
-    })
-    unique && oj.dependency.push(thisModuleInfo);
-  } else {
-    oj.dependency.forEach(dep => {
-      if (dep.name === name) {
-        findByIndex(dep, path, ++index)
-      }
-    })
-  }
+var gModuleVersion = {
+  __thisProjectName: '',
+  __stopBundle: false
 }
 
 function ModuleDependency() {}
@@ -136,173 +37,354 @@ function identToLoaderRequest(resultString) {
   }
 }
 
-function canBundle() {
+function canBundle(entryCallStack) {
   var result = {
     result: true,
     msg: []
   }
-  for (var comp in moduleVersionsUsed) {
-    var compVersions = Object.keys(moduleVersionsUsed[comp]); // ['1.8.0', '1.7.0']
-    var libVersionNum = compVersions.length;
-    if (libVersionNum > 1) {
-      // 依赖库不止一个版本
-      result.result = false
-
+  for (var entry in entryCallStack) {
+    for (var lib in entryCallStack[entry]) {
+      libVersionNum = Object.keys(entryCallStack[entry][lib]).length
+      if (libVersionNum > 1) {
+        // 依赖库不止一个版本
+        result.result = false
+        // result.msg.push('\nThere are ' + libVersionNum + ' version of ' + lib + ' in ' + entry + ' :');
+        // for (version in entryCallStack[entry][lib]) {
+        //     result.msg.push('Version: ' + version);
+        //     result.msg = result.msg.concat(entryCallStack[entry][lib][version]);
+        // }
+      }
       result.msg.push(
         '\nThere are ' +
         libVersionNum +
         ' version of ' +
-        comp +
-        // ' in ' +
-        // entry +
+        lib +
+        ' in ' +
+        entry +
         ' :'
       )
-      compVersions.forEach(version => {
-        result.msg.push('Version: ' + version);
-        result.msg = result.msg.concat(moduleVersionsUsed[comp][version])
-      })
+      for (version in entryCallStack[entry][lib]) {
+        result.msg.push('Version: ' + version)
+        result.msg = result.msg.concat(entryCallStack[entry][lib][version])
+      }
     }
   }
   return result
 }
 
-function setModuleVersion(allRequests) {
-  allRequests.forEach(singleModule => {
-    // 获取版本
-    let path = singleModule.path;
-    let name = singleModule.descriptionFileData && singleModule.descriptionFileData.name;
-    let version = singleModule.descriptionFileData && singleModule.descriptionFileData.version;
+function recursiveDependenceBuild(entry, prefix, callStack) {
+  var prefix = prefix + '--> '
+  var deep = prefix.match(/-->/g).length // 递归深度 超过十层默认为循环引用
 
-    // 存储版本信息
-    moduleVersions[name] = moduleVersions[name] || {};
-    moduleVersions[name][version] = moduleVersions[name][version] || new Set();
-    moduleVersions[name][version].add(path);
+  var dependenceList = []
+  if (entry == null) {
+    return dependenceList
+  }
+  var dependencies = entry.dependencies
+
+  // 处理require.ensure加载进来的JS
+  if (entry.blocks && entry.blocks.length !== 0) {
+    entry.blocks.forEach(function(block) {
+      // 如果需要把分出来的js文件在依赖树中标注出来，就在这里添加属性（找到文件名之类的），在下面dependencies循环中再处理
+      dependencies = dependencies.concat(block.dependencies)
+    })
+  }
+
+  var requireList = [
+    'HarmonyImportDependency',
+    'CommonJsRequireDependency',
+    'AMDRequireDependency',
+    'RequireEnsureItemDependency',
+    'SingleEntryDependency',
+    "HarmonyCompatibilityDependency"
+  ]
+  dependencies.forEach(function(dependence) {
+    var originModule = dependence.originModule || dependence.module;
+    if (originModule == null) {
+      return;
+    }
+    if (entry == originModule) {
+      // 处理重复引用问题
+      return;
+    }
+    if(deep !== originModule.userRequest.split('node_modules').length -1 ){
+      // 处理深层依赖被扁平化  防止多现实一次
+      return;
+    }
+    var type = dependence.__proto__.constructor.name
+    if (requireList.indexOf(type) !== -1) {
+      var temp = {}
+      temp.name = originModule.rawRequest
+      temp.type = type === 'AMDRequireDependency' ? 'AMD' : 'CMD'
+      if (gModuleVersion[temp.name]) {
+        // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
+        gModuleVersion[temp.name].forEach(function(subModule) {
+          if (subModule.path === originModule.userRequest) {
+            temp.version = subModule.version
+          }
+        })
+      } 
+      // else {
+      //   // 如果不存在对应的依赖 可能是用户自定义的js   temp.name是js文件的绝对或相对地址
+      //   // 例如入口文件中 import './index2'  temp.name为 ./index2
+      //   // 这种情况下取当前工程的版本当做此文件的版本
+      //   gModuleVersion[gModuleVersion.__thisProjectName].forEach(function(
+      //     subModule
+      //   ) {
+      //     if (subModule.path === originModule.userRequest) {
+      //       temp.version = subModule.version
+      //     }
+      //   })
+      // }
+
+      if (temp.version) {
+        // 没有version 默认为引用的是该模块内置js文件或者公用模块，非第三方模块。  忽略掉，不在依赖树内显示
+        // 直接忽略的另一个原因是 递归可能无法终止，因为引用的公共模块内又引了公共模块
+
+        // callStack相关
+        var tempPrefix = prefix + temp.name
+        callStack[temp.name] = callStack[temp.name] || {}
+        if (callStack[temp.name][temp.version]) {
+          callStack[temp.name][temp.version].push(tempPrefix)
+        } else {
+          callStack[temp.name][temp.version] = [tempPrefix]
+        }
+
+        if (deep > 11) {
+          gModuleVersion.__stopBundle = true
+          var msg =
+            '!!!Here may be a circular reference. Stop dependency graph build!!!'
+          temp.dependency = msg
+          console.log(msg)
+          dependenceList.push(temp)
+          return
+        }
+
+        temp.dependency = recursiveDependenceBuild(
+          originModule,
+          tempPrefix,
+          callStack
+        )
+
+        // dependenceList相关
+        dependenceList.push(temp)
+      }
+    }
+  })
+  return dependenceList
+}
+
+function setGModuleVersion(requests) {
+  requests.forEach(function(request) {
+    if (request == null) {
+      return
+    }
+    if (request.path.indexOf('node_modules') === -1) {
+      // 项目名称在compiler和compilation中皆获取不到
+      // 所以在依赖的文件中 根据js路径判断是否是用户自定义js 非引入的第三方js
+      // 若非第三方js即可判断为用户编写的js 从而可以在request中获取到项目名称
+      gModuleVersion.__thisProjectName = request.descriptionFileData.name
+    }
+    if (!gModuleVersion[request.descriptionFileData.name]) {
+      gModuleVersion[request.descriptionFileData.name] = [{
+        path: request.path,
+        version: request.descriptionFileData.version
+      }]
+    } else {
+      var newVersion = false
+      gModuleVersion[request.descriptionFileData.name].forEach(function(
+        subModule
+      ) {
+        if (
+          subModule.path !== request.path ||
+          subModule.version !== request.descriptionFileData.version
+        ) {
+          newVersion = true
+        }
+      })
+      if (newVersion) {
+        gModuleVersion[request.descriptionFileData.name].push({
+          path: request.path,
+          version: request.descriptionFileData.version
+        })
+      }
+    }
   })
 }
 
 ModuleDependency.prototype.apply = function(compiler) {
-  var allRequests = []
+  var requests = []
   compiler.plugin('normal-module-factory', function(nmf) {
-    // 重写NormalModuleFactory.js内98行 为了得到request内的模块版本信息
-    nmf.plugin("resolver", () => (data, callback) => {
+    // 重写NormalModuleFactory.js内120行 为了得到request内的模块版本信息
+    nmf.plugin('resolver', function() {
       var _this = nmf
-      const contextInfo = data.contextInfo;
-      const context = data.context;
-      const request = data.request;
+      return function(data, callback) {
+        var contextInfo = data.contextInfo
+        var context = data.context
+        var request = data.request
+        var resolveContextInfo = {}
 
-      const noAutoLoaders = /^-?!/.test(request);
-      const noPrePostAutoLoaders = /^!!/.test(request);
-      const noPostAutoLoaders = /^-!/.test(request);
-      let elements = request.replace(/^-?!+/, "").replace(/!!+/g, "!").split("!");
-      let resource = elements.pop();
-      elements = elements.map(identToLoaderRequest);
+        var noAutoLoaders = /^-?!/.test(request)
+        var noPrePostAutoLoaders = /^!!/.test(request)
+        var noPostAutoLoaders = /^-!/.test(request)
+        var elements = request
+          .replace(/^-?!+/, '')
+          .replace(/!!+/g, '!')
+          .split('!')
+        var resource = elements.pop()
+        elements = elements.map(identToLoaderRequest)
 
-      async.parallel([
-        callback => _this.resolveRequestArray(contextInfo, context, elements, _this.resolvers.loader, callback),
-        callback => {
-          if (resource === "" || resource[0] === "?")
-            return callback(null, {
-              resource
-            });
-
-          _this.resolvers.normal.resolve(contextInfo, context, resource, (err, resource, resourceResolveData) => {
-            if (err) return callback(err);
-            allRequests.push(resourceResolveData);
-            callback(null, {
-              resourceResolveData,
-              resource
-            });
-          });
-        }
-      ], (err, results) => {
-        if (err) return callback(err);
-        let loaders = results[0];
-        const resourceResolveData = results[1].resourceResolveData;
-        resource = results[1].resource;
-
-        // translate option idents
-        try {
-          loaders.forEach(item => {
-            if (typeof item.options === "string" && /^\?/.test(item.options)) {
-              const ident = item.options.substr(1);
-              item.options = _this.ruleSet.findOptionsByIdent(ident);
-              item.ident = ident;
+        async.parallel(
+          [
+            function(callback) {
+              _this.resolveRequestArray(
+                resolveContextInfo,
+                context,
+                elements,
+                _this.resolvers.loader,
+                callback
+              )
+            },
+            function(callback) {
+              if (resource === '' || resource[0] === '?')
+                return callback(null, resource)
+              _this.resolvers.normal.resolve(
+                resolveContextInfo,
+                context,
+                resource,
+                function(err, result, request) {
+                  requests.push(request)
+                  if (err) return callback(err)
+                  callback(null, result)
+                }
+              )
             }
-          });
-        } catch (e) {
-          return callback(e);
-        }
+          ],
+          function(err, results) {
+            if (err) return callback(err)
+            var loaders = results[0]
+            resource = results[1]
 
-        if (resource === false) {
-          // ignored
-          return callback(null,
-            new RawModule(
-              "/* (ignored) */",
-              `ignored ${context} ${request}`,
-              `${request} (ignored)`
+            // translate option idents
+            try {
+              loaders.forEach(function(item) {
+                if (
+                  typeof item.options === 'string' &&
+                  /^\?/.test(item.options)
+                ) {
+                  item.options = _this.ruleSet.findOptionsByIdent(
+                    item.options.substr(1)
+                  )
+                }
+              })
+            } catch (e) {
+              return callback(e)
+            }
+
+            if (resource === false)
+              return callback(
+                null,
+                new RawModule(
+                  '/* (ignored) */',
+                  'ignored ' + context + ' ' + request,
+                  request + ' (ignored)'
+                )
+              ) // ignored
+
+            var userRequest = loaders
+              .map(loaderToIdent)
+              .concat([resource])
+              .join('!')
+
+            var resourcePath = resource
+            var resourceQuery = ''
+            var queryIndex = resourcePath.indexOf('?')
+            if (queryIndex >= 0) {
+              resourceQuery = resourcePath.substr(queryIndex)
+              resourcePath = resourcePath.substr(0, queryIndex)
+            }
+
+            var result = _this.ruleSet.exec({
+              resource: resourcePath,
+              resourceQuery: resourceQuery,
+              issuer: contextInfo.issuer
+            })
+            var settings = {}
+            var useLoadersPost = []
+            var useLoaders = []
+            var useLoadersPre = []
+            result.forEach(function(r) {
+              if (r.type === 'use') {
+                if (
+                  r.enforce === 'post' &&
+                  !noPostAutoLoaders &&
+                  !noPrePostAutoLoaders
+                )
+                  useLoadersPost.push(r.value)
+                else if (r.enforce === 'pre' && !noPrePostAutoLoaders)
+                  useLoadersPre.push(r.value)
+                else if (!r.enforce && !noAutoLoaders && !noPrePostAutoLoaders)
+                  useLoaders.push(r.value)
+              } else {
+                settings[r.type] = r.value
+              }
+            })
+            async.parallel(
+              [
+                _this.resolveRequestArray.bind(
+                  _this,
+                  resolveContextInfo,
+                  _this.context,
+                  useLoadersPost,
+                  _this.resolvers.loader
+                ),
+                _this.resolveRequestArray.bind(
+                  _this,
+                  resolveContextInfo,
+                  _this.context,
+                  useLoaders,
+                  _this.resolvers.loader
+                ),
+                _this.resolveRequestArray.bind(
+                  _this,
+                  resolveContextInfo,
+                  _this.context,
+                  useLoadersPre,
+                  _this.resolvers.loader
+                )
+              ],
+              function(err, results) {
+                if (err) return callback(err)
+                loaders = results[0]
+                  .concat(loaders)
+                  .concat(results[1])
+                  .concat(results[2])
+                process.nextTick(onDoneResolving)
+              }
             )
-          );
-        }
 
-        const userRequest = loaders.map(loaderToIdent).concat([resource]).join("!");
-
-        let resourcePath = resource;
-        let resourceQuery = "";
-        const queryIndex = resourcePath.indexOf("?");
-        if (queryIndex >= 0) {
-          resourceQuery = resourcePath.substr(queryIndex);
-          resourcePath = resourcePath.substr(0, queryIndex);
-        }
-
-        const result = _this.ruleSet.exec({
-          resource: resourcePath,
-          resourceQuery,
-          issuer: contextInfo.issuer,
-          compiler: contextInfo.compiler
-        });
-        const settings = {};
-        const useLoadersPost = [];
-        const useLoaders = [];
-        const useLoadersPre = [];
-        result.forEach(r => {
-          if (r.type === "use") {
-            if (r.enforce === "post" && !noPostAutoLoaders && !noPrePostAutoLoaders)
-              useLoadersPost.push(r.value);
-            else if (r.enforce === "pre" && !noPrePostAutoLoaders)
-              useLoadersPre.push(r.value);
-            else if (!r.enforce && !noAutoLoaders && !noPrePostAutoLoaders)
-              useLoaders.push(r.value);
-          } else {
-            settings[r.type] = r.value;
+            function onDoneResolving() {
+              callback(null, {
+                context: context,
+                request: loaders
+                  .map(loaderToIdent)
+                  .concat([resource])
+                  .join('!'),
+                dependencies: data.dependencies,
+                userRequest: userRequest,
+                rawRequest: request,
+                loaders: loaders,
+                resource: resource,
+                parser: _this.getParser(settings.parser)
+              })
+            }
           }
-        });
-        async.parallel([
-          _this.resolveRequestArray.bind(this, contextInfo, _this.context, useLoadersPost, _this.resolvers.loader),
-          _this.resolveRequestArray.bind(this, contextInfo, _this.context, useLoaders, _this.resolvers.loader),
-          _this.resolveRequestArray.bind(this, contextInfo, _this.context, useLoadersPre, _this.resolvers.loader)
-        ], (err, results) => {
-          if (err) return callback(err);
-          loaders = results[0].concat(loaders, results[1], results[2]);
-          process.nextTick(() => {
-            callback(null, {
-              context: context,
-              request: loaders.map(loaderToIdent).concat([resource]).join("!"),
-              dependencies: data.dependencies,
-              userRequest,
-              rawRequest: request,
-              loaders,
-              resource,
-              resourceResolveData,
-              parser: _this.getParser(settings.parser)
-            });
-          });
-        });
-      });
-    });
+        )
+      }
+    })
   })
   var reg = new RegExp('(mjs.sinaimg.cn/umd/.*["\'])')
-  var dependenceUMD = [];
-
+  var dependenceUMD = []
   compiler.plugin('compilation', function(compilation) {
     compilation.plugin('optimize-chunk-assets', function(chunks, callback) {
       if (compilation.fileDependencies.length > 0) {
@@ -334,61 +416,40 @@ ModuleDependency.prototype.apply = function(compiler) {
     })
   })
   compiler.plugin('emit', function(compilation, callback) {
-    setModuleVersion(allRequests)
-
+    setGModuleVersion(requests)
+    console.log(gModuleVersion);
     var dependencyGraph = []
     var entryCallStack = {}
     compilation.chunks.forEach(function(chunk) {
-      let saveByNums = [];
-      let entry = {}
-      let entryModule = chunk.entryModule;
-      if (entryModule) {
+      var entry = {}
+      if (chunk.entryModule != null) {
+        // 拥有entry的模块
         entry.entry = chunk.name // 入口名
-        entry.dependency = []
-        entryModule.dependencies.forEach(dependence => {
-          let _module = dependence.module;
-          _module && _module.fileDependencies && _module.fileDependencies.forEach(path => {
-            // path 形如   
-            // "/Users/zihao5/Desktop/Test/wajuejiProject/node_modules/@mfelibs/base-utils/src/zepto.js"
-            // "/Users/zihao5/Desktop/Test/wajuejiProject/node_modules/@mfelibs/base-tools-lazyload/node_modules/@mfelibs/base-tools-SIMA/src/index.js"
-            let temp = path.split('node_modules/');
-            let nums = temp.length;
-
-            // 按依赖深度存储 保证找依赖更深的层级时能找到上级组件
-            if (saveByNums[nums]) {
-              saveByNums[nums].push(path)
-            } else {
-              saveByNums[nums] = [path];
-            }
-          })
-        })
+        entryCallStack[entry.entry] = {}
+        entry.dependency = recursiveDependenceBuild(
+          chunk.entryModule.dependencies[1].module,
+          entry.entry,
+          entryCallStack[entry.entry]
+        ) // 依赖模块数组
+        dependencyGraph.push(entry)
       }
-
-      saveByNums.splice(0, 2); // 删除前两项  第一项为空  第二项为非node_modules的元素
-      saveByNums.forEach(pathList => {
-        pathList.forEach(path => {
-          findByIndex(entry, path, 1);
-        })
-      })
-
-      dependencyGraph.push(entry);
     })
-    var result = canBundle(dependencyGraph);
-    if (!result.result) {
-      // 可能有循环引用 终止打包
-      console.error('\n\n---Version conflict---')
-      result.msg.forEach(function(msg) {
-        console.log(msg)
-      })
-      console.log(
-        '\n---End bundle! Please make sure your libs has no version conflict!---'
-      )
-      console.log(
-        '---If you have any questions, please contact zihao5@staff.sina.com.cn---\n'
-      )
-      process.exit(1)
-    } else {
+    var result = canBundle(entryCallStack)
+    if (1) {
       // 无版本冲突 生成依赖树文件 正常执行后续操作
+
+      // dependencyGraphJsonStr = JSON.stringify(dependencyGraph)
+      // compilation.assets['dependencyGraph.json'] = {
+      //     'source': function () {
+      //         return dependencyGraphJsonStr
+      //     },
+      //     'size': function () {
+      //         return dependencyGraphJsonStr.length;
+      //     }
+      // };
+      // console.log("Prepare to generate dependencyGraph.json in " + compilation.outputOptions.path);
+      // callback();
+      // var indexContent = fs.readFileSync(path.join(compilation.outputOptions.path, "/index.html"));
       for (var i = 0; i < dependenceUMD.length; i++) {
         dependenceUMD[i] = {
           name: dependenceUMD[i].split('|')[0],
@@ -402,6 +463,8 @@ ModuleDependency.prototype.apply = function(compiler) {
       )
       var dependencyGraphJsonStr = JSON.stringify(dependencyGraph)
       dependencyGraph.forEach(function(eachEntry) {
+        // var entry = eachEntry.entry;
+        // var graphPath = path.join(entry, 'dependencyGraph.json');
         var graphPath = 'dependencyGraph.json'
         compilation.assets[graphPath] = {
           source: function() {
@@ -411,10 +474,23 @@ ModuleDependency.prototype.apply = function(compiler) {
             return dependencyGraphJsonStr.length
           }
         }
+        var outputPath = path.join(compilation.outputOptions.path, graphPath)
+        // console.log('\nPrepare to generate dependency graph in ' + outputPath)
       })
       callback()
+    } else {
+      // 版本冲突 不执行callback，即不生成任何文件，终止打包
+      console.error('---Version conflict---')
+      result.msg.forEach(function(msg) {
+        console.log(msg)
+      })
+      console.log(
+        '---End bundle! Please make sure your libs has no version conflict!---'
+      )
+      console.log(
+        '---If you have any questions, please contact zihao5@staff.sina.com.cn---'
+      )
     }
-
   })
 }
 
