@@ -1,0 +1,24 @@
+{
+  "name": "sinamfe-webpack-module_dependency",
+  "version": "1.2.2",
+  "description": "获取工程依赖树以及相应版本",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SinaMFE/webpack-module_dependency.git"
+  },
+  "keywords": [
+    "webpack",
+    "plugin",
+    "dependencie collect"
+  ],
+  "author": "NowhereToRun <zihao5@staff.sina.com.cn>",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/SinaMFE/webpack-module_dependency/issues"
+  },
+  "homepage": "https://github.com/SinaMFE/webpack-module_dependency#readme"
+}
