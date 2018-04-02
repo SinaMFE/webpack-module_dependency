@@ -368,18 +368,19 @@ ModuleDependency.prototype.apply = function(compiler) {
         if (Array.isArray(chunk.entryModule.dependencies) && chunk.entryModule.dependencies.length > 1) {
           // 第一项为 工程化公共的模块
           // 工程化公共的模块 看是否有需求需要加入 可统计到 promise-polyfill object-assign
-          // var entryPub = {
-          //   entry: "webpack-marauder-public",
-          // }
-          // entryCallStack[entryPub.entry] = {}
-          // entryPub.dependency = recursiveDependenceBuild(
-          //   chunk.entryModule.dependencies[0].module,
-          //   entryPub.entry,
-          //   entryCallStack[entryPub.entry]
-          // ) // 依赖模块数组
-          // dependencyGraph.push(entryPub)
+          var entryPub = {
+            entry: "webpack-marauder-public",
+          }
+          entryCallStack[entryPub.entry] = {}
+          entryPub.dependency = recursiveDependenceBuild(
+            chunk.entryModule.dependencies[0].module,
+            entryPub.entry,
+            entryCallStack[entryPub.entry]
+          )
+          // 不单独区分
+          // dependencyGraph.push(entryPub) 
 
-          // 第一项为 入口模块          
+          // 第二项为 入口模块          
           var entry = {}
           entry.entry = chunk.name // 入口名
           entryCallStack[entry.entry] = {}
@@ -387,7 +388,9 @@ ModuleDependency.prototype.apply = function(compiler) {
             chunk.entryModule.dependencies[1].module,
             entry.entry,
             entryCallStack[entry.entry]
-          ) // 依赖模块数组
+          )
+          // 合并共用组件
+          entry.dependency = entryPub.dependency.concat(entry.dependency);
           dependencyGraph.push(entry)
         }
       }
