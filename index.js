@@ -102,8 +102,11 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
       // 处理重复引用问题
       return;
     }
+    if (originModule.userRequest == null) {
+      return
+    }
     if (deep !== originModule.userRequest.split('node_modules').length - 1) {
-      // 处理深层依赖被扁平化  防止多现实一次
+      // 处理深层依赖被扁平化  防止多显示一次
       return;
     }
     var type = dependence.__proto__.constructor.name
