@@ -37,13 +37,17 @@ function identToLoaderRequest(resultString) {
   }
 }
 
-function getModuleName(path) {
+function getModuleNameByPath(path) {
   let pathList = path.split('node_modules/');
   let nums = pathList.length;
   if (nums == 1) {
     return ''
   }
   str = pathList[nums - 1];
+  return formatModuleName(str)
+}
+
+function formatModuleName(str) {
   if (/^@/.test(str)) {
     // 带命名空间 私有仓库
     let nameList = str.match(/[^\/]*\/[^\/]*/);
@@ -132,7 +136,10 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
       temp.type = type === 'AMDRequireDependency' ? 'AMD' : 'CMD';
       if (/^\./.test(temp.name)) {
         // 处理只能获取到相对路径的模块 例如client-jsbridge
-        temp.name = getModuleName(originModule.userRequest);
+        temp.name = getModuleNameByPath(originModule.userRequest);
+      } else {
+        // 兼容只引入模块的一部分 例如 import sncClass from "@mfelibs/client-jsbridge/src/sdk/core/sdk.js";
+        temp.name = formatModuleName(temp.name);
       }
       if (gModuleVersion[temp.name]) {
         // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
