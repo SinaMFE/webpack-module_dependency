@@ -90,7 +90,7 @@ function canBundle(entryCallStack) {
 function recursiveDependenceBuild(entry, prefix, callStack) {
   var prefix = prefix + '--> '
   var deep = prefix.match(/-->/g).length // 递归深度 超过十层默认为循环引用
-
+  var parentModule = prefix.split('--> ')[deep - 1];
   var dependenceList = []
   if (entry == null) {
     return dependenceList
@@ -125,7 +125,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
     if (originModule.userRequest == null) {
       return
     }
-    if (deep !== originModule.userRequest.split('node_modules').length - 1) {
+    if (deep + 1 !== originModule.depth) {
       // 处理深层依赖被扁平化  防止多显示一次
       return;
     }
@@ -140,6 +140,10 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
       } else {
         // 兼容只引入模块的一部分 例如 import sncClass from "@mfelibs/client-jsbridge/src/sdk/core/sdk.js";
         temp.name = formatModuleName(temp.name);
+      }
+      if (temp.name === parentModule) {
+        // 防止一些组件自身相对路径引用被识别为依赖  例如client-jsbridge
+        return;
       }
       if (gModuleVersion[temp.name]) {
         // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
