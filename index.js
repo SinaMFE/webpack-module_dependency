@@ -37,6 +37,22 @@ function identToLoaderRequest(resultString) {
   }
 }
 
+function getModuleName(path) {
+  let pathList = path.split('node_modules/');
+  let nums = pathList.length;
+  if (nums == 1) {
+    return ''
+  }
+  str = pathList[nums - 1];
+  if (/^@/.test(str)) {
+    // 带命名空间 私有仓库
+    let nameList = str.match(/[^\/]*\/[^\/]*/);
+    return nameList && nameList[0]
+  } else {
+    return str.split('/')[0]
+  }
+}
+
 function canBundle(entryCallStack) {
   var result = {
     result: true,
@@ -111,9 +127,13 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
     }
     var type = dependence.__proto__.constructor.name
     if (requireList.indexOf(type) !== -1) {
-      var temp = {}
-      temp.name = originModule.rawRequest
-      temp.type = type === 'AMDRequireDependency' ? 'AMD' : 'CMD'
+      var temp = {};
+      temp.name = originModule.rawRequest;
+      temp.type = type === 'AMDRequireDependency' ? 'AMD' : 'CMD';
+      if (/^\./.test(temp.name)) {
+        // 处理只能获取到相对路径的模块 例如client-jsbridge
+        temp.name = getModuleName(originModule.userRequest);
+      }
       if (gModuleVersion[temp.name]) {
         // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
         gModuleVersion[temp.name].forEach(function(subModule) {
@@ -143,7 +163,12 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         var tempPrefix = prefix + temp.name
         callStack[temp.name] = callStack[temp.name] || {}
         if (callStack[temp.name][temp.version]) {
-          callStack[temp.name][temp.version].push(tempPrefix)
+          if (callStack[temp.name][temp.version].indexOf(tempPrefix) !== -1) {
+            // 已存在 已计算过一次
+            return;
+          } else {
+            callStack[temp.name][temp.version].push(tempPrefix)
+          }
         } else {
           callStack[temp.name][temp.version] = [tempPrefix]
         }
