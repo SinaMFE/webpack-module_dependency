@@ -138,8 +138,17 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         // 处理只能获取到相对路径的模块 例如client-jsbridge
         temp.name = getModuleNameByPath(originModule.userRequest);
       } else {
+        // 1. 
         // 兼容只引入模块的一部分 例如 import sncClass from "@mfelibs/client-jsbridge/src/sdk/core/sdk.js";
+        // temp.name形如  /Users/zihao5/Desktop/Code/worldcup-home/node_modules/@mfelibs/client-jsbridge/src/sdk/core/sdk.js
+        // 2.
+        // loader处理的模块会被在此错误处理 但是没有影响 例如
+        // !../../../node_modules/vue-loader/lib/component-normalizer
+        // !!babel-loader?{"babelrc":false,"presets":["babel-preset-react-app"],"plugins":["transform-decorators-legacy"],"compact":true,"cacheDirectory":false,"highlightCode":true}!../../../node_modules/vue-loader/lib/selector?type=script&index=0!./index.vue
         temp.name = formatModuleName(temp.name);
+      }
+      if (!temp.name) {
+        return;
       }
       if (temp.name === parentModule) {
         // 防止一些组件自身相对路径引用被识别为依赖  例如client-jsbridge
@@ -165,7 +174,6 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
       //     }
       //   })
       // }
-
       if (temp.version) {
         // 没有version 默认为引用的是该模块内置js文件或者公用模块，非第三方模块。  忽略掉，不在依赖树内显示
         // 直接忽略的另一个原因是 递归可能无法终止，因为引用的公共模块内又引了公共模块
