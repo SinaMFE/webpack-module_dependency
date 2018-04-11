@@ -88,7 +88,7 @@ function canBundle(entryCallStack) {
   return result
 }
 
-function setProjectInfo(_path){
+function setProjectInfo(_path) {
   projectPath = _path;
   var packageJsonPath = path.resolve(projectPath, 'package.json');
   var packageJSON = require(packageJsonPath);
@@ -98,7 +98,9 @@ function setProjectInfo(_path){
 function recursiveDependenceBuild(entry, prefix, callStack) {
   var prefix = prefix + '--> '
   var deep = prefix.match(/-->/g).length // 递归深度 超过十层默认为循环引用
+  var loaderNum = prefix.match(/~babel-loader~/g) ? prefix.match(/~babel-loader~/g).length : 0;
   var parentModule = prefix.split('--> ')[deep - 1];
+  deep = deep - loaderNum;
   var dependenceList = []
   if (entry == null) {
     return dependenceList
@@ -114,21 +116,27 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
   }
 
   var requireList = [
-    'HarmonyImportDependency',
-    'CommonJsRequireDependency',
-    'AMDRequireDependency',
-    'RequireEnsureItemDependency',
-    'SingleEntryDependency',
-    "HarmonyCompatibilityDependency"
+    "HarmonyImportDependency",
+    "CommonJsRequireDependency",
+    "AMDRequireDependency",
+    "RequireEnsureItemDependency",
+    "SingleEntryDependency",
+    "HarmonyCompatibilityDependency",
+    "HarmonyImportSpecifierDependency",
+    "ConcatenatedModule"
   ]
   dependencies.forEach(function(dependence) {
-    var originModule = dependence.originModule || dependence.module;
+    var originModule = dependence.originModule || dependence.module // || dependence.importDependency && dependence.importDependency.module;
     if (originModule == null) {
       return;
     }
     if (entry == originModule) {
       // 处理重复引用问题
       return;
+    }
+    if (originModule.__proto__.constructor.name === "ConcatenatedModule") {
+      // ConcatenatedModule的特殊性 获取不到绝对路径
+      originModule = originModule.rootModule;
     }
     if (originModule.userRequest == null) {
       return
@@ -137,10 +145,10 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
       // 处理深层依赖被扁平化  防止多显示一次
       return;
     }
-    var type = dependence.__proto__.constructor.name
+    var type = dependence.__proto__.constructor.name;
     if (requireList.indexOf(type) !== -1) {
       var temp = {};
-      temp.name = originModule.rawRequest;
+      temp.name = originModule.rawRequest || originModule.userRequest;
       temp.type = type === 'AMDRequireDependency' ? 'AMD' : 'CMD';
       if (/^\./.test(temp.name)) {
         // 处理只能获取到相对路径的模块 例如client-jsbridge
@@ -159,6 +167,11 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         // 防止一些组件自身相对路径引用被识别为依赖  例如client-jsbridge
         return;
       }
+      if (/^!!babel-loader/.test(temp.name)) {
+        let index = originModule.userRequest.lastIndexOf(projectPath);
+        temp.name = originModule.userRequest.substring(index);
+        temp.extra = 'babel-loader'; // 添加标识 防止被返回
+      }
       if (gModuleVersion[temp.name]) {
         // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
         gModuleVersion[temp.name].forEach(function(subModule) {
@@ -173,9 +186,14 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         gModuleVersion[projectName].forEach(function(
           subModule
         ) {
-          if (subModule.path === originModule.userRequest) {
+          if (subModule.path === temp.name) {
             temp.version = subModule.version;
-            temp.name = temp.name.replace(projectPath, projectName + '~');
+            if (temp.extra) {
+              temp.name = temp.name.replace(projectPath, projectName + '~' + temp.extra + '~');
+              delete temp.extra
+            } else {
+              temp.name = temp.name.replace(projectPath, projectName + '~');
+            }
           }
         })
       }
