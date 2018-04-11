@@ -1,3 +1,9 @@
+[![npm][npm]][npm-url]
+[![node][node]][node-url]
+[![deps][deps]][deps-url]
+[![tests][tests]][tests-url]
+
+
 # webpack-module_dependency
 webpack-marauder 依赖树插件
 
@@ -19,3 +25,24 @@ entry -> test-npm-module-react -> react @15.6.2
 ~~例如在entry的dependencies中可以找到两类依赖，除了工程本身的依赖还可以获取是webpack-marauder相关的公有依赖，可以找到promise-polyfill@6.1.0 object-assign@4.1.1。这类忽略掉了~~   
 
 三、 webpack-marauder升级可能会导致依赖树变化，需要对应检查
+
+
+
+
+[npm]: https://img.shields.io/npm/v/sinamfe-webpack-module_dependency.svg
+[npm-url]: https://npmjs.com/package/sinamfe-webpack-module_dependency
+
+[node]: https://img.shields.io/node/v/sinamfe-webpack-module_dependency.svg
+[node-url]: https://nodejs.org
+
+[deps]: https://david-dm.org/SinaMFE/sinamfe-webpack-module_dependency.svg
+[deps-url]: https://david-dm.org/SinaMFE/sinamfe-webpack-module_dependency
+
+[tests]: http://img.shields.io/travis/SinaMFE/sinamfe-webpack-module_dependency.svg
+[tests-url]: https://travis-ci.org/SinaMFE/sinamfe-webpack-module_dependency
+
+[cover]: https://img.shields.io/codecov/c/github/SinaMFE/sinamfe-webpack-module_dependency.svg
+[cover-url]: https://codecov.io/gh/SinaMFE/sinamfe-webpack-module_dependency
+
+[chat]: https://badges.gitter.im/webpack/webpack.svg
+[chat-url]: https://gitter.im/webpack/webpack
