@@ -1,11 +1,12 @@
-var async = require('async')
-var RawModule = require('webpack/lib/RawModule')
-var path = require('path')
-var fs = require('fs')
-var process = require('process')
+const async = require('async')
+const RawModule = require('webpack/lib/RawModule')
+const path = require('path')
+const fs = require('fs')
+const process = require('process')
 
 var gModuleVersion = {}
-
+var projectPath = '';
+var projectName = '';
 
 function ModuleDependency() {}
 
@@ -41,7 +42,7 @@ function getModuleNameByPath(path) {
   let pathList = path.split('node_modules/');
   let nums = pathList.length;
   if (nums == 1) {
-    return ''
+    return path
   }
   str = pathList[nums - 1];
   return formatModuleName(str)
@@ -85,6 +86,13 @@ function canBundle(entryCallStack) {
     }
   }
   return result
+}
+
+function setProjectInfo(_path){
+  projectPath = _path;
+  var packageJsonPath = path.resolve(projectPath, 'package.json');
+  var packageJSON = require(packageJsonPath);
+  projectName = packageJSON.name;
 }
 
 function recursiveDependenceBuild(entry, prefix, callStack) {
@@ -136,7 +144,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
       temp.type = type === 'AMDRequireDependency' ? 'AMD' : 'CMD';
       if (/^\./.test(temp.name)) {
         // 处理只能获取到相对路径的模块 例如client-jsbridge
-        temp.name = getModuleNameByPath(originModule.userRequest);
+        temp.name = getModuleNameByPath(originModule.userRequest)
       } else {
         // 1. 
         // 兼容只引入模块的一部分 例如 import sncClass from "@mfelibs/client-jsbridge/src/sdk/core/sdk.js";
@@ -146,9 +154,6 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         // !../../../node_modules/vue-loader/lib/component-normalizer
         // !!babel-loader?{"babelrc":false,"presets":["babel-preset-react-app"],"plugins":["transform-decorators-legacy"],"compact":true,"cacheDirectory":false,"highlightCode":true}!../../../node_modules/vue-loader/lib/selector?type=script&index=0!./index.vue
         temp.name = formatModuleName(temp.name);
-      }
-      if (!temp.name) {
-        return;
       }
       if (temp.name === parentModule) {
         // 防止一些组件自身相对路径引用被识别为依赖  例如client-jsbridge
@@ -161,19 +166,20 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
             temp.version = subModule.version
           }
         })
+      } else {
+        // 如果不存在对应的依赖 可能是用户自定义的js   temp.name是js文件的绝对或相对地址
+        // 例如入口文件中 import './index2'  temp.name为 ./index2
+        // 这种情况下取当前工程的版本当做此文件的版本 并修正文件名为相对路径 因为绝对路径里的文件夹名不一定是工程名 且不同用户不一致
+        gModuleVersion[projectName].forEach(function(
+          subModule
+        ) {
+          if (subModule.path === originModule.userRequest) {
+            temp.version = subModule.version;
+            temp.name = temp.name.replace(projectPath, projectName + '~');
+          }
+        })
       }
-      // else {
-      //   // 如果不存在对应的依赖 可能是用户自定义的js   temp.name是js文件的绝对或相对地址
-      //   // 例如入口文件中 import './index2'  temp.name为 ./index2
-      //   // 这种情况下取当前工程的版本当做此文件的版本
-      //   gModuleVersion[gModuleVersion.__thisProjectName].forEach(function(
-      //     subModule
-      //   ) {
-      //     if (subModule.path === originModule.userRequest) {
-      //       temp.version = subModule.version
-      //     }
-      //   })
-      // }
+
       if (temp.version) {
         // 没有version 默认为引用的是该模块内置js文件或者公用模块，非第三方模块。  忽略掉，不在依赖树内显示
         // 直接忽略的另一个原因是 递归可能无法终止，因为引用的公共模块内又引了公共模块
@@ -407,9 +413,11 @@ ModuleDependency.prototype.apply = function(compiler) {
     })
   })
   compiler.plugin('emit', function(compilation, callback) {
+    setProjectInfo(this.context);
     setGModuleVersion(allRequests)
-    var dependencyGraph = []
-    var entryCallStack = {}
+    var dependencyGraph = [];
+    var entryCallStack = {};
+
     compilation.chunks.forEach(function(chunk) {
       if (chunk.entryModule != null) {
         if (Array.isArray(chunk.entryModule.dependencies) && chunk.entryModule.dependencies.length > 1) {
