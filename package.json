@@ -12,6 +12,7 @@
     "url": "git+https://github.com/SinaMFE/webpack-module_dependency.git"
   },
   "keywords": [
+    "duplicate dependencie",
     "webpack",
     "plugin",
     "dependencie collect"
