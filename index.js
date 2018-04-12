@@ -131,6 +131,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         "SingleEntryDependency",
         "HarmonyCompatibilityDependency",
         "HarmonyImportSpecifierDependency",
+        "ImportDependency",
         "ConcatenatedModule"
     ];
     dependencies.forEach(function(dependence) {

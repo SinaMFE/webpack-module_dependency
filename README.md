@@ -31,7 +31,41 @@ entry -> test-npm-module-react -> react @15.6.2
 ~~二、 忽略了工程化本身的依赖~~
 ~~例如在entry的dependencies中可以找到两类依赖，除了工程本身的依赖还可以获取是webpack-marauder相关的公有依赖，可以找到promise-polyfill@6.1.0 object-assign@4.1.1。这类忽略掉了~~
 
-三、 webpack-marauder升级可能会导致依赖树变化，需要对应检查
+三、 webpack-marauder升级可能会导致依赖树变化，需要对应检查  
+
+
+
+### 更新流程  
+
+
+```
+git add .
+git cz
+```
+
+Run the npm version [`npm version [path|minor|major]`](https://docs.npmjs.com/cli/version) command
+
+```
+//发小补丁
+npm version patch -m 'commit message'
+
+//发小版本
+npm version minor -m 'commit message'
+
+//发小版本
+npm version major -m 'commit message'
+
+```
+
+```
+cnpm publish
+```
+
+Push
+
+```
+git push
+```
 
 
 
