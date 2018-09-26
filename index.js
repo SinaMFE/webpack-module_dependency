@@ -3,13 +3,15 @@ const RawModule = require("webpack/lib/RawModule");
 const path = require("path");
 const fs = require("fs");
 const process = require("process");
+const findRoot = require("find-root");
+
 
 var gModuleVersion = {};
 var projectPath = "";
 var projectName = "";
+let pkgNameSet = new Set();
 
 function ModuleDependency(options) {
-
     this.options = options || {};
 }
 
@@ -75,12 +77,12 @@ function canBundle(entryCallStack) {
                 result.result = false;
                 result.msg.push(
                     "\nThere are " +
-                        libVersionNum +
-                        " version of " +
-                        lib +
-                        " in " +
-                        entry +
-                        " :"
+                    libVersionNum +
+                    " version of " +
+                    lib +
+                    " in " +
+                    entry +
+                    " :"
                 );
                 for (version in entryCallStack[entry][lib]) {
                     result.msg.push("Version: " + version);
@@ -101,12 +103,38 @@ function setProjectInfo(_path) {
     projectName = packageJSON.name;
 }
 
+function getClosestPackage(modulePath) {
+    var root = void 0;
+    var pkg = void 0;
+
+    // Catch findRoot or require errors
+    try {
+        root = findRoot(modulePath);
+        pkg = require(path.join(root, "package.json"));
+    } catch (e) {
+        return null;
+    }
+
+    // If the package.json does not have a name property, try again from
+    // one level higher.
+    // https://github.com/jsdnxx/find-root/issues/2
+    // https://github.com/date-fns/date-fns/issues/264#issuecomment-265128399
+    if (!pkg.name) {
+        return getClosestPackage(path.resolve(root, ".."));
+    }
+
+    return {
+        package: pkg,
+        path: root
+    };
+}
+
 function recursiveDependenceBuild(entry, prefix, callStack) {
     var prefix = prefix + "--> ";
     var deep = prefix.match(/-->/g).length; // 递归深度 超过十层默认为循环引用
-    var loaderNum = prefix.match(/~babel-loader~/g)
-        ? prefix.match(/~babel-loader~/g).length
-        : 0;
+    var loaderNum = prefix.match(/~babel-loader~/g) ?
+        prefix.match(/~babel-loader~/g).length :
+        0;
     var parentModule = prefix.split("--> ")[deep - 1];
     deep = deep - loaderNum;
     var dependenceList = [];
@@ -117,7 +145,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
 
     // 处理require.ensure加载进来的JS
     if (entry.blocks && entry.blocks.length !== 0) {
-        entry.blocks.forEach(function(block) {
+        entry.blocks.forEach(function (block) {
             // 如果需要把分出来的js文件在依赖树中标注出来，就在这里添加属性（找到文件名之类的），在下面dependencies循环中再处理
             dependencies = dependencies.concat(block.dependencies);
         });
@@ -134,7 +162,8 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         "ImportDependency",
         "ConcatenatedModule"
     ];
-    dependencies.forEach(function(dependence) {
+
+    dependencies.forEach(function (dependence) {
         var originModule = dependence.originModule || dependence.module; // || dependence.importDependency && dependence.importDependency.module;
         if (originModule == null) {
             return;
@@ -147,10 +176,14 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
             // ConcatenatedModule的特殊性 获取不到绝对路径
             originModule = originModule.rootModule;
         }
-        if (originModule.userRequest == null) {
+        if (originModule.userRequest == null && originModule.rawRequest == null) {
             return;
         }
-        if (deep + 1 !== originModule.depth) {
+        // if (deep + 1 !== originModule.depth) {
+        //     // 处理深层依赖被扁平化  防止多显示一次
+        //     return;
+        // }
+        if (Math.abs(originModule.depth - deep) > 5) {
             // 处理深层依赖被扁平化  防止多显示一次
             return;
         }
@@ -183,7 +216,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
             }
             if (gModuleVersion[temp.name]) {
                 // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
-                gModuleVersion[temp.name].forEach(function(subModule) {
+                gModuleVersion[temp.name].forEach(function (subModule) {
                     if (subModule.path === originModule.userRequest) {
                         temp.version = subModule.version;
                     }
@@ -192,7 +225,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
                 // 如果不存在对应的依赖 可能是用户自定义的js   temp.name是js文件的绝对或相对地址
                 // 例如入口文件中 import './index2'  temp.name为 ./index2
                 // 这种情况下取当前工程的版本当做此文件的版本 并修正文件名为相对路径 因为绝对路径里的文件夹名不一定是工程名 且不同用户不一致
-                gModuleVersion[projectName].forEach(function(subModule) {
+                gModuleVersion[projectName].forEach(function (subModule) {
                     if (subModule.path === temp.name) {
                         temp.version = subModule.version;
                         if (temp.extra) {
@@ -212,6 +245,8 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
             }
 
             if (temp.version) {
+                pkgNameSet.add(temp.name);
+
                 // 没有version 默认为引用的是该模块内置js文件或者公用模块，非第三方模块。  忽略掉，不在依赖树内显示
                 // 直接忽略的另一个原因是 递归可能无法终止，因为引用的公共模块内又引了公共模块
 
@@ -258,7 +293,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
 }
 
 function setGModuleVersion(requests) {
-    requests.forEach(function(request) {
+    requests.forEach(function (request) {
         if (request == null) {
             return;
         }
@@ -269,15 +304,13 @@ function setGModuleVersion(requests) {
         //   gModuleVersion.__thisProjectName = request.descriptionFileData.name
         // }
         if (!gModuleVersion[request.descriptionFileData.name]) {
-            gModuleVersion[request.descriptionFileData.name] = [
-                {
-                    path: request.path,
-                    version: request.descriptionFileData.version
-                }
-            ];
+            gModuleVersion[request.descriptionFileData.name] = [{
+                path: request.path,
+                version: request.descriptionFileData.version
+            }];
         } else {
             var newVersion = false;
-            gModuleVersion[request.descriptionFileData.name].forEach(function(
+            gModuleVersion[request.descriptionFileData.name].forEach(function (
                 subModule
             ) {
                 if (
@@ -302,14 +335,14 @@ function setGModuleVersion(requests) {
  * @param {String} scrop   cnpm scrop
  * @param {String} umdRegExp   用于匹配html中按照版本号发布umd的组件
  */
-ModuleDependency.prototype.apply = function(compiler) {
+ModuleDependency.prototype.apply = function (compiler) {
     var options = this.options;
-    options.scrop=options.scrop||"@mfelibs/";
-    options.umdRegExp=options.umdRegExp||"(mjs.sinaimg.cn/umd/.*[\"'])";
+    options.scrop = options.scrop || "@mfelibs/";
+    options.umdRegExp = options.umdRegExp || "(mjs.sinaimg.cn/umd/.*[\"'])";
     //check params
 
     var allRequests = [];
-    compiler.plugin("normal-module-factory", function(nmf) {
+    compiler.plugin("normal-module-factory", function (nmf) {
         // 重写NormalModuleFactory.js内98行 为了得到request内的模块版本信息
         nmf.plugin("resolver", () => (data, callback) => {
             var _this = nmf;
@@ -330,13 +363,13 @@ ModuleDependency.prototype.apply = function(compiler) {
             async.parallel(
                 [
                     callback =>
-                        _this.resolveRequestArray(
-                            contextInfo,
-                            context,
-                            elements,
-                            _this.resolvers.loader,
-                            callback
-                        ),
+                    _this.resolveRequestArray(
+                        contextInfo,
+                        context,
+                        elements,
+                        _this.resolvers.loader,
+                        callback
+                    ),
                     callback => {
                         if (resource === "" || resource[0] === "?")
                             return callback(null, {
@@ -497,8 +530,8 @@ ModuleDependency.prototype.apply = function(compiler) {
 
     // var reg = new RegExp("(mjs.sinaimg.cn/umd/.*[\"'])");
     var dependenceUMD = [];
-    compiler.plugin("compilation", function(compilation) {
-        compilation.plugin("optimize-chunk-assets", function(chunks, callback) {
+    compiler.plugin("compilation", function (compilation) {
+        compilation.plugin("optimize-chunk-assets", function (chunks, callback) {
             if (compilation.fileDependencies.length > 0) {
                 for (var i = 0; i < compilation.fileDependencies.length; i++) {
                     if (compilation.fileDependencies[i].indexOf(".html") >= 0) {
@@ -510,15 +543,15 @@ ModuleDependency.prototype.apply = function(compiler) {
                         if (matchs == null || matchs.length == 0) {
                             continue;
                         }
-                        if(!options.scrop){
-                            options.scrop="";
+                        if (!options.scrop) {
+                            options.scrop = "";
                         }
                         for (var j = 0; j < matchs.length; j++) {
                             var array = matchs[j].toLowerCase().split("/");
                             if (array.length == 5) {
                                 //严格匹配路径 "@mfelibs/"
                                 var item =
-                                options.scrop+
+                                    options.scrop +
                                     array[2] + "|" + array[3];
                                 if (dependenceUMD.indexOf(item) == -1) {
                                     dependenceUMD.push(item);
@@ -535,13 +568,14 @@ ModuleDependency.prototype.apply = function(compiler) {
             callback();
         });
     });
-    compiler.plugin("emit", function(compilation, callback) {
+    compiler.plugin("emit", function (compilation, callback) {
+        debugger
         setProjectInfo(this.context);
         setGModuleVersion(allRequests);
         var dependencyGraph = [];
         var entryCallStack = {};
 
-        compilation.chunks.forEach(function(chunk) {
+        compilation.chunks.forEach(function (chunk) {
             if (chunk.entryModule != null) {
                 if (
                     Array.isArray(chunk.entryModule.dependencies) &&
@@ -578,6 +612,45 @@ ModuleDependency.prototype.apply = function(compiler) {
                 }
             }
         });
+
+        // 补齐树结构中没有查到的包
+        compilation.modules.forEach(function (module) {
+            if (!module.resource) {
+                return;
+            }
+
+            var pkg = void 0;
+            var packagePath = void 0;
+
+            var closestPackage = getClosestPackage(module.resource);
+
+            // Skip module if no closest package is found
+            if (!closestPackage) {
+                return;
+            }
+
+            pkg = closestPackage.package;
+            packagePath = closestPackage.path;
+
+            var version = pkg.version;
+            var name = pkg.name;
+
+            if (/^@mfelibs/.test(name)) {
+                // 暂时只处理 mfelibs 下的  自动补全
+                if (!pkgNameSet.has(name)) {
+                    pkgNameSet.add(name);
+                    dependencyGraph[0].dependency.push({
+                        name,
+                        "type": "CMD",
+                        version,
+                        "dependency": [],
+                        msg: 'append'
+                    })
+                }
+            }
+        });
+
+
         var result = canBundle(entryCallStack);
         if (result.result) {
             // 无版本冲突 生成依赖树文件 正常执行后续操作
@@ -593,13 +666,13 @@ ModuleDependency.prototype.apply = function(compiler) {
                 dependenceUMD
             );
             var dependencyGraphJsonStr = JSON.stringify(dependencyGraph);
-            dependencyGraph.forEach(function(eachEntry) {
+            dependencyGraph.forEach(function (eachEntry) {
                 var graphPath = "dependencyGraph.json";
                 compilation.assets[graphPath] = {
-                    source: function() {
+                    source: function () {
                         return dependencyGraphJsonStr;
                     },
-                    size: function() {
+                    size: function () {
                         return dependencyGraphJsonStr.length;
                     }
                 };
@@ -612,7 +685,7 @@ ModuleDependency.prototype.apply = function(compiler) {
         } else {
             // 可能有循环引用 终止打包
             console.error("\n\n---Version conflict---");
-            result.msg.forEach(function(msg) {
+            result.msg.forEach(function (msg) {
                 console.log(msg);
             });
             console.log(
