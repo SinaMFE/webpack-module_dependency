@@ -1,6 +1,6 @@
 {
   "name": "sinamfe-webpack-module_dependency",
-  "version": "1.3.3",
+  "version": "1.3.4",
   "description": "获取工程依赖树以及相应版本",
   "main": "index.js",
   "scripts": {
