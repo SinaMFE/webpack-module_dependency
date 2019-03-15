@@ -245,7 +245,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
           callStack[temp.name][temp.version] = [tempPrefix];
         }
 
-        if (deep > 11) {
+        if (deep > 16) {
           gModuleVersion.__stopBundle = true;
           var msg = '!!!Here may be a circular reference. Stop dependency graph build!!!';
           temp.dependency = msg;
