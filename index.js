@@ -1,10 +1,12 @@
-const async = require('async');
 const RawModule = require('webpack/lib/RawModule');
 const path = require('path');
 const fs = require('fs');
 const process = require('process');
 const findRoot = require('find-root');
+const asyncLib = require('neo-async');
 
+const MATCH_RESOURCE_REGEX = /^([^!]+)!=!/;
+const PLUGIN_NAME = 'SinaModuleDependency';
 var gModuleVersion = {};
 var projectPath = '';
 var projectName = '';
@@ -14,32 +16,38 @@ function ModuleDependency(options = {}) {
   this.options = { ...{ emitError: true }, ...options };
 }
 
-function loaderToIdent(data) {
-  if (!data.options) return data.loader;
-  if (typeof data.options === 'string') return data.loader + '?' + data.options;
-  if (typeof data.options !== 'object') throw new Error('loader options must be string or object');
-  if (data.ident) return data.loader + '??' + data.ident;
+const loaderToIdent = (data) => {
+  if (!data.options) {
+    return data.loader;
+  }
+  if (typeof data.options === 'string') {
+    return data.loader + '?' + data.options;
+  }
+  if (typeof data.options !== 'object') {
+    throw new Error('loader options must be string or object');
+  }
+  if (data.ident) {
+    return data.loader + '??' + data.ident;
+  }
   return data.loader + '?' + JSON.stringify(data.options);
-}
+};
 
-function identToLoaderRequest(resultString) {
-  var idx = resultString.indexOf('?');
-  var options;
-
+const identToLoaderRequest = (resultString) => {
+  const idx = resultString.indexOf('?');
   if (idx >= 0) {
-    options = resultString.substr(idx + 1);
-    resultString = resultString.substr(0, idx);
-
+    const loader = resultString.substr(0, idx);
+    const options = resultString.substr(idx + 1);
     return {
-      loader: resultString,
-      options: options
+      loader,
+      options
     };
   } else {
     return {
-      loader: resultString
+      loader: resultString,
+      options: undefined
     };
   }
-}
+};
 
 function getModuleNameByPath(path) {
   let pathList = path.split('node_modules/');
@@ -85,8 +93,8 @@ function canBundle(entryCallStack) {
   return result;
 }
 
-function setProjectInfo(_path) {
-  projectPath = _path;
+function setProjectInfo() {
+  projectPath = process.cwd();
   var packageJsonPath = path.resolve(projectPath, 'package.json');
   var packageJSON = require(packageJsonPath);
   projectName = packageJSON.name;
@@ -128,6 +136,10 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
   if (entry == null) {
     return dependenceList;
   }
+
+  if (entry.__proto__.constructor.name === 'ConcatenatedModule') {
+    entry = entry.rootModule;
+  }
   var dependencies = entry.dependencies;
 
   // 处理require.ensure加载进来的JS
@@ -145,13 +157,14 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
     'RequireEnsureItemDependency',
     'SingleEntryDependency',
     'HarmonyCompatibilityDependency',
+    'HarmonyImportSideEffectDependency',
     'HarmonyImportSpecifierDependency',
     'ImportDependency',
     'ConcatenatedModule'
   ];
 
   dependencies.forEach(function(dependence) {
-    var originModule = dependence.originModule || dependence.module; // || dependence.importDependency && dependence.importDependency.module;
+    var originModule = dependence.module || dependence.originModule; // || dependence.importDependency && dependence.importDependency.module;
     if (originModule == null) {
       return;
     }
@@ -182,6 +195,8 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
       if (/^\./.test(temp.name)) {
         // 处理只能获取到相对路径的模块 例如client-jsbridge
         temp.name = getModuleNameByPath(originModule.userRequest);
+      } else if (temp.name.indexOf('vue-loader-options!') !== -1) {
+        temp.name = originModule.resource;
       } else {
         // 1.
         // 兼容只引入模块的一部分 例如 import sncClass from "@mfelibs/client-jsbridge/src/sdk/core/sdk.js";
@@ -201,6 +216,18 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         temp.name = originModule.userRequest.substring(index);
         temp.extra = 'babel-loader'; // 添加标识 防止被返回
       }
+
+      // if (temp.name.indexOf('vue-loader-options!') !== -1) {
+      //   temp.name = originModule.resource;
+      //   temp.extra = 'vue-loader'; // 添加标识 防止被返回
+      // }
+
+      // vue loader 处理的脚本
+      if (temp.name.indexOf('.vue?vue&type=script') !== -1) {
+        temp.name = temp.name.replace(/\?vue&type=scrip.*/, '');
+        temp.extra = 'vue-loader'; // 添加标识 防止被返回
+      }
+
       if (gModuleVersion[temp.name]) {
         // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
         gModuleVersion[temp.name].forEach(function(subModule) {
@@ -314,44 +341,54 @@ ModuleDependency.prototype.apply = function(compiler) {
   //check params
 
   var allRequests = [];
-  compiler.plugin('normal-module-factory', function(nmf) {
-    // 重写NormalModuleFactory.js内98行 为了得到request内的模块版本信息
-    nmf.plugin('resolver', () => (data, callback) => {
-      var _this = nmf;
+
+  compiler.hooks.normalModuleFactory.tap(PLUGIN_NAME, function(nmf) {
+    // 重写NormalModuleFactory.js内159行 为了得到request内的模块版本信息
+    nmf.hooks.resolver.tap(PLUGIN_NAME, () => (data, callback) => {
       const contextInfo = data.contextInfo;
       const context = data.context;
       const request = data.request;
 
-      const noAutoLoaders = /^-?!/.test(request);
-      const noPrePostAutoLoaders = /^!!/.test(request);
-      const noPostAutoLoaders = /^-!/.test(request);
-      let elements = request
+      const loaderResolver = nmf.getResolver('loader');
+      const normalResolver = nmf.getResolver('normal', data.resolveOptions);
+
+      let matchResource = undefined;
+      let requestWithoutMatchResource = request;
+      const matchResourceMatch = MATCH_RESOURCE_REGEX.exec(request);
+      if (matchResourceMatch) {
+        matchResource = matchResourceMatch[1];
+        if (/^\.\.?\//.test(matchResource)) {
+          matchResource = path.join(context, matchResource);
+        }
+        requestWithoutMatchResource = request.substr(matchResourceMatch[0].length);
+      }
+
+      const noPreAutoLoaders = requestWithoutMatchResource.startsWith('-!');
+      const noAutoLoaders = noPreAutoLoaders || requestWithoutMatchResource.startsWith('!');
+      const noPrePostAutoLoaders = requestWithoutMatchResource.startsWith('!!');
+      let elements = requestWithoutMatchResource
         .replace(/^-?!+/, '')
         .replace(/!!+/g, '!')
         .split('!');
       let resource = elements.pop();
       elements = elements.map(identToLoaderRequest);
 
-      async.parallel(
+      asyncLib.parallel(
         [
           (callback) =>
-            _this.resolveRequestArray(
-              contextInfo,
-              context,
-              elements,
-              _this.resolvers.loader,
-              callback
-            ),
+            nmf.resolveRequestArray(contextInfo, context, elements, loaderResolver, callback),
           (callback) => {
-            if (resource === '' || resource[0] === '?')
+            if (resource === '' || resource[0] === '?') {
               return callback(null, {
                 resource
               });
+            }
 
-            _this.resolvers.normal.resolve(
+            normalResolver.resolve(
               contextInfo,
               context,
               resource,
+              {},
               (err, resource, resourceResolveData) => {
                 if (err) return callback(err);
                 allRequests.push(resourceResolveData);
@@ -371,13 +408,13 @@ ModuleDependency.prototype.apply = function(compiler) {
 
           // translate option idents
           try {
-            loaders.forEach((item) => {
-              if (typeof item.options === 'string' && /^\?/.test(item.options)) {
+            for (const item of loaders) {
+              if (typeof item.options === 'string' && item.options[0] === '?') {
                 const ident = item.options.substr(1);
-                item.options = _this.ruleSet.findOptionsByIdent(ident);
+                item.options = nmf.ruleSet.findOptionsByIdent(ident);
                 item.ident = ident;
               }
-            });
+            }
           } catch (e) {
             return callback(e);
           }
@@ -394,12 +431,14 @@ ModuleDependency.prototype.apply = function(compiler) {
             );
           }
 
-          const userRequest = loaders
-            .map(loaderToIdent)
-            .concat([resource])
-            .join('!');
+          const userRequest =
+            (matchResource !== undefined ? `${matchResource}!=!` : '') +
+            loaders
+              .map(loaderToIdent)
+              .concat([resource])
+              .join('!');
 
-          let resourcePath = resource;
+          let resourcePath = matchResource !== undefined ? matchResource : resource;
           let resourceQuery = '';
           const queryIndex = resourcePath.indexOf('?');
           if (queryIndex >= 0) {
@@ -407,8 +446,9 @@ ModuleDependency.prototype.apply = function(compiler) {
             resourcePath = resourcePath.substr(0, queryIndex);
           }
 
-          const result = _this.ruleSet.exec({
+          const result = nmf.ruleSet.exec({
             resource: resourcePath,
+            realResource: matchResource !== undefined ? resource.replace(/\?.*/, '') : resourcePath,
             resourceQuery,
             issuer: contextInfo.issuer,
             compiler: contextInfo.compiler
@@ -417,45 +457,56 @@ ModuleDependency.prototype.apply = function(compiler) {
           const useLoadersPost = [];
           const useLoaders = [];
           const useLoadersPre = [];
-          result.forEach((r) => {
+          for (const r of result) {
             if (r.type === 'use') {
-              if (r.enforce === 'post' && !noPostAutoLoaders && !noPrePostAutoLoaders)
+              if (r.enforce === 'post' && !noPrePostAutoLoaders) {
                 useLoadersPost.push(r.value);
-              else if (r.enforce === 'pre' && !noPrePostAutoLoaders) useLoadersPre.push(r.value);
-              else if (!r.enforce && !noAutoLoaders && !noPrePostAutoLoaders)
+              } else if (r.enforce === 'pre' && !noPreAutoLoaders && !noPrePostAutoLoaders) {
+                useLoadersPre.push(r.value);
+              } else if (!r.enforce && !noAutoLoaders && !noPrePostAutoLoaders) {
                 useLoaders.push(r.value);
+              }
+            } else if (
+              typeof r.value === 'object' &&
+              r.value !== null &&
+              typeof settings[r.type] === 'object' &&
+              settings[r.type] !== null
+            ) {
+              settings[r.type] = cachedMerge(settings[r.type], r.value);
             } else {
               settings[r.type] = r.value;
             }
-          });
-          async.parallel(
+          }
+          asyncLib.parallel(
             [
-              _this.resolveRequestArray.bind(
-                this,
+              nmf.resolveRequestArray.bind(
+                nmf,
                 contextInfo,
-                _this.context,
+                nmf.context,
                 useLoadersPost,
-                _this.resolvers.loader
+                loaderResolver
               ),
-              _this.resolveRequestArray.bind(
-                this,
+              nmf.resolveRequestArray.bind(
+                nmf,
                 contextInfo,
-                _this.context,
+                nmf.context,
                 useLoaders,
-                _this.resolvers.loader
+                loaderResolver
               ),
-              _this.resolveRequestArray.bind(
-                this,
+              nmf.resolveRequestArray.bind(
+                nmf,
                 contextInfo,
-                _this.context,
+                nmf.context,
                 useLoadersPre,
-                _this.resolvers.loader
+                loaderResolver
               )
             ],
             (err, results) => {
               if (err) return callback(err);
               loaders = results[0].concat(loaders, results[1], results[2]);
               process.nextTick(() => {
+                const type = settings.type;
+                const resolveOptions = settings.resolve;
                 callback(null, {
                   context: context,
                   request: loaders
@@ -467,8 +518,13 @@ ModuleDependency.prototype.apply = function(compiler) {
                   rawRequest: request,
                   loaders,
                   resource,
+                  matchResource,
                   resourceResolveData,
-                  parser: _this.getParser(settings.parser)
+                  settings,
+                  type,
+                  parser: nmf.getParser(type, settings.parser),
+                  generator: nmf.getGenerator(type, settings.generator),
+                  resolveOptions
                 });
               });
             }
@@ -481,8 +537,8 @@ ModuleDependency.prototype.apply = function(compiler) {
 
   // var reg = new RegExp("(mjs.sinaimg.cn/umd/.*[\"'])");
   var dependenceUMD = [];
-  compiler.plugin('compilation', function(compilation) {
-    compilation.plugin('optimize-chunk-assets', function(chunks, callback) {
+  compiler.hooks.compilation.tap(PLUGIN_NAME, function(compilation) {
+    compilation.hooks.optimizeChunkAssets.tap(PLUGIN_NAME, function(chunks) {
       if (compilation.fileDependencies.length > 0) {
         for (var i = 0; i < compilation.fileDependencies.length; i++) {
           if (compilation.fileDependencies[i].indexOf('.html') >= 0) {
@@ -511,12 +567,11 @@ ModuleDependency.prototype.apply = function(compiler) {
           }
         }
       } //
-      callback();
+      // callback();
     });
   });
-  compiler.plugin('emit', function(compilation, callback) {
-    debugger;
-    setProjectInfo(this.context);
+  compiler.hooks.emit.tap(PLUGIN_NAME, function(compilation) {
+    setProjectInfo();
     setGModuleVersion(allRequests);
     var dependencyGraph = [];
     var entryCallStack = {};
@@ -558,7 +613,7 @@ ModuleDependency.prototype.apply = function(compiler) {
     });
 
     // 补齐树结构中没有查到的包
-    compilation.modules.forEach((module) => {
+    compilation.modules.forEach((module, index) => {
       if (!module.resource) {
         return;
       }
@@ -579,7 +634,7 @@ ModuleDependency.prototype.apply = function(compiler) {
       var version = pkg.version;
       var name = pkg.name;
 
-      if (/^@mfelibs/.test(name)) {
+      if (/mfelibs/.test(name)) {
         // 暂时只处理 mfelibs 下的  自动补全
         if (!pkgNameSet.has(name)) {
           pkgNameSet.add(name);
@@ -635,7 +690,7 @@ ModuleDependency.prototype.apply = function(compiler) {
       array.push(new Error(error));
     }
 
-    callback();
+    // callback();
   });
 };
 
