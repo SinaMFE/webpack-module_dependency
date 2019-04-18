@@ -1,6 +1,6 @@
 {
   "name": "sinamfe-webpack-module_dependency",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "获取工程依赖树以及相应版本",
   "main": "index.js",
   "scripts": {
@@ -30,5 +30,9 @@
     "commitizen": {
       "path": "./node_modules/cz-conventional-changelog"
     }
+  },
+  "dependencies": {
+    "find-root": "^1.1.0",
+    "neo-async": "^2.6.0"
   }
 }
