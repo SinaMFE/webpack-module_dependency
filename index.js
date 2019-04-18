@@ -118,6 +118,24 @@ function getClosestPackage(modulePath) {
   };
 }
 
+function getPathVersion(contextPath){
+    let returnPath = {};
+    let ppath = "package.json";
+    if(fs.existsSync(path.join(contextPath,ppath))){
+        //
+        let pjson = require(path.join(contextPath,ppath));
+        returnPath={
+            name:pjson.name,
+            originPath :contextPath,
+            version:pjson.version
+        }
+    }
+    else{
+        returnPath=getPathVersion(path.resolve(contextPath, '..'))
+    }
+    return returnPath;
+}
+
 function recursiveDependenceBuild(entry, prefix, callStack) {
   var prefix = prefix + '--> ';
   var deep = prefix.match(/-->/g).length; // 递归深度 超过十层默认为循环引用
@@ -166,64 +184,78 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
     if (originModule.userRequest == null && originModule.rawRequest == null) {
       return;
     }
+    // console.log(originModule.userRequest);
+    // if(originModule.userRequest.indexOf("base-tools-nph")>=0){
+    //     debugger
+    // }
     // if (deep + 1 !== originModule.depth) {
     //     // 处理深层依赖被扁平化  防止多显示一次
     //     return;
     // }
-    if (Math.abs(originModule.depth - deep) > 5) {
-      // 处理深层依赖被扁平化  防止多显示一次
-      return;
-    }
+    // if (Math.abs(originModule.depth - deep) > 5) {
+    //   // 处理深层依赖被扁平化  防止多显示一次
+    //   return;
+    // }
     var type = dependence.__proto__.constructor.name;
+    var temp = {};
+    let pjson = getPathVersion(originModule.userRequest);
+
+    temp.originPath = pjson.originPath;
     if (requireList.indexOf(type) !== -1) {
-      var temp = {};
-      temp.name = originModule.rawRequest || originModule.userRequest;
+    //   temp.name =originModule.context || originModule.userRequest;
+      temp.version =pjson.version;
+      temp.name=pjson.name;
+
       temp.type = type === 'AMDRequireDependency' ? 'AMD' : 'CMD';
-      if (/^\./.test(temp.name)) {
-        // 处理只能获取到相对路径的模块 例如client-jsbridge
-        temp.name = getModuleNameByPath(originModule.userRequest);
-      } else {
-        // 1.
-        // 兼容只引入模块的一部分 例如 import sncClass from "@mfelibs/client-jsbridge/src/sdk/core/sdk.js";
-        // temp.name形如  /Users/zihao5/Desktop/Code/worldcup-home/node_modules/@mfelibs/client-jsbridge/src/sdk/core/sdk.js
-        // 2.
-        // loader处理的模块会被在此错误处理 但是没有影响 例如
-        // !../../../node_modules/vue-loader/lib/component-normalizer
-        // !!babel-loader?{"babelrc":false,"presets":["babel-preset-react-app"],"plugins":["transform-decorators-legacy"],"compact":true,"cacheDirectory":false,"highlightCode":true}!../../../node_modules/vue-loader/lib/selector?type=script&index=0!./index.vue
-        temp.name = formatModuleName(temp.name);
-      }
+
+    //   if (/^\./.test(temp.name)) {
+    //     // 处理只能获取到相对路径的模块 例如client-jsbridge
+    //     temp.name = getModuleNameByPath(originModule.userRequest);
+    //   } else {
+    //     // 1.
+    //     // 兼容只引入模块的一部分 例如 import sncClass from "@mfelibs/client-jsbridge/src/sdk/core/sdk.js";
+    //     // temp.name形如  /Users/zihao5/Desktop/Code/worldcup-home/node_modules/@mfelibs/client-jsbridge/src/sdk/core/sdk.js
+    //     // 2.
+    //     // loader处理的模块会被在此错误处理 但是没有影响 例如
+    //     // !../../../node_modules/vue-loader/lib/component-normalizer
+    //     // !!babel-loader?{"babelrc":false,"presets":["babel-preset-react-app"],"plugins":["transform-decorators-legacy"],"compact":true,"cacheDirectory":false,"highlightCode":true}!../../../node_modules/vue-loader/lib/selector?type=script&index=0!./index.vue
+    //     temp.name = formatModuleName(temp.name);
+    //   }
+    //   if(temp.name =="!!.."){
+    //       debugger
+    //   }
       if (temp.name === parentModule) {
         // 防止一些组件自身相对路径引用被识别为依赖  例如client-jsbridge
         return;
       }
-      if (/^!!babel-loader/.test(temp.name)) {
-        let index = originModule.userRequest.lastIndexOf(projectPath);
-        temp.name = originModule.userRequest.substring(index);
-        temp.extra = 'babel-loader'; // 添加标识 防止被返回
-      }
-      if (gModuleVersion[temp.name]) {
-        // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
-        gModuleVersion[temp.name].forEach(function(subModule) {
-          if (subModule.path === originModule.userRequest) {
-            temp.version = subModule.version;
-          }
-        });
-      } else {
-        // 如果不存在对应的依赖 可能是用户自定义的js   temp.name是js文件的绝对或相对地址
-        // 例如入口文件中 import './index2'  temp.name为 ./index2
-        // 这种情况下取当前工程的版本当做此文件的版本 并修正文件名为相对路径 因为绝对路径里的文件夹名不一定是工程名 且不同用户不一致
-        gModuleVersion[projectName].forEach(function(subModule) {
-          if (subModule.path === temp.name) {
-            temp.version = subModule.version;
-            if (temp.extra) {
-              temp.name = temp.name.replace(projectPath, projectName + '~' + temp.extra + '~');
-              delete temp.extra;
-            } else {
-              temp.name = temp.name.replace(projectPath, projectName + '~');
-            }
-          }
-        });
-      }
+    //   if (/^!!babel-loader/.test(temp.name)) {
+    //     let index = originModule.userRequest.lastIndexOf(projectPath);
+    //     temp.name = originModule.userRequest.substring(index);
+    //     temp.extra = 'babel-loader'; // 添加标识 防止被返回
+    //   }
+    //   if (gModuleVersion[temp.name]) {
+    //     // 如果存在对应的依赖 比较路径 temp.name类似 @mfelibs/test-version-biz
+    //     // gModuleVersion[temp.name].forEach(function(subModule) {
+    //     //   if (subModule.path === originModule.userRequest) {
+    //     //     // temp.version = subModule.version;
+    //     //   }
+    //     // });
+    //   } else {
+    //     // 如果不存在对应的依赖 可能是用户自定义的js   temp.name是js文件的绝对或相对地址
+    //     // 例如入口文件中 import './index2'  temp.name为 ./index2
+    //     // 这种情况下取当前工程的版本当做此文件的版本 并修正文件名为相对路径 因为绝对路径里的文件夹名不一定是工程名 且不同用户不一致
+    //     gModuleVersion[projectName].forEach(function(subModule) {
+    //       if (subModule.path === temp.name) {
+    //         // temp.version = subModule.version;
+    //         if (temp.extra) {
+    //           temp.name = temp.name.replace(projectPath, projectName + '~' + temp.extra + '~');
+    //           delete temp.extra;
+    //         } else {
+    //           temp.name = temp.name.replace(projectPath, projectName + '~');
+    //         }
+    //       }
+    //     });
+    //   }
 
       if (temp.version) {
         pkgNameSet.add(temp.name);
@@ -232,17 +264,16 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
         // 直接忽略的另一个原因是 递归可能无法终止，因为引用的公共模块内又引了公共模块
 
         // callStack相关
-        var tempPrefix = prefix + temp.name;
         callStack[temp.name] = callStack[temp.name] || {};
         if (callStack[temp.name][temp.version]) {
-          if (callStack[temp.name][temp.version].indexOf(tempPrefix) !== -1) {
+          if (callStack[temp.name][temp.version].indexOf(temp.originPath) !== -1) {
             // 已存在 已计算过一次
             return;
           } else {
-            callStack[temp.name][temp.version].push(tempPrefix);
+            callStack[temp.name][temp.version].push(temp.originPath);
           }
         } else {
-          callStack[temp.name][temp.version] = [tempPrefix];
+          callStack[temp.name][temp.version] = [temp.originPath];
         }
 
         if (deep > 16) {
@@ -253,9 +284,7 @@ function recursiveDependenceBuild(entry, prefix, callStack) {
           dependenceList.push(temp);
           return;
         }
-
-        temp.dependency = recursiveDependenceBuild(originModule, tempPrefix, callStack);
-
+        temp.dependency = recursiveDependenceBuild(originModule, "", callStack);
         // dependenceList相关
         dependenceList.push(temp);
       }
@@ -515,7 +544,6 @@ ModuleDependency.prototype.apply = function(compiler) {
     });
   });
   compiler.plugin('emit', function(compilation, callback) {
-    debugger;
     setProjectInfo(this.context);
     setGModuleVersion(allRequests);
     var dependencyGraph = [];
@@ -538,6 +566,7 @@ ModuleDependency.prototype.apply = function(compiler) {
             entryPub.entry,
             entryCallStack[entryPub.entry]
           );
+        //   console.log(entryPub.entry);
           // 不单独区分
           // dependencyGraph.push(entryPub)
 
