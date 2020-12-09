@@ -1,6 +1,6 @@
 {
   "name": "sinamfe-webpack-module_dependency",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "获取工程依赖树以及相应版本",
   "main": "index.js",
   "scripts": {
